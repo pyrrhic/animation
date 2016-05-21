@@ -37,84 +37,102 @@
     (scrolled [this amount] false)))
 
 ;components
-(defn create-animation-c [animation-textures should-loop]
+(defn transform-component [x y rot]
   (assoc {}
-         :animations animation-textures
-         :current-frame -1 ;using negative 1 as a way to indicate that this animation has no started.
-         :current-duration 0.0
-         :loop should-loop
-         :rotation -1)) ;negative 1 indicates that no rotation is applied. otherwise should be in degrees.
-
-(defn create-renderable-c [texture x y]
-  (assoc {}
-         :texture texture
          :x x
-         :y y))
+         :y y
+         :rotation rot))
+
+(defn animation-component [animations]
+  "anims example - {:walk [tex1 frame-duration1 tex2 frame-duration2]
+                    :idle [tex1 frame-duration1]}"
+  (assoc {}
+         :tex-and-durs animations
+         :is-playing true
+         :current-frame 0
+         :current-duration (second (:pistol-fire animations))))
 
 ;entities
-(defn create-pistoleer [tex-cache x y]
+(defn pistoleer-entity [{tex-cache :tex-cache}]
   (assoc {}
-         :renderable (create-renderable-c (first (:pistol-idle tex-cache)) x y)
-         :animation (create-animation-c (:pistol-fire tex-cache) true)))
+         :transform (transform-component 50 50 0)
+         :animations (animation-component {:pistol-idle (:pistol-idle tex-cache)
+                                            :pistol-fire (:pistol-fire tex-cache)})
+         :renderable (first (:pistol-fire tex-cache))
+         :state :firing))
 
 ;systems
-(defn render-s [{entities :entities batch :batch}]
-  (.begin batch)
-  (loop [ents entities]
-    (if (empty? ents)
-      nil
-      (if-let [renderable (:renderable (first ents))]
-        (.draw batch (:texture renderable) (float (:x renderable)) (float (:y renderable)) (float 64) (float 128))
-        (recur (rest ents)))))
-  (.end batch)
-  game)  
+(defn update-animation-and-render-comps [ent animation-state]
+  (let [inc-frame (inc (:current-frame (:animations ent)))
+        next-frame (if (>= inc-frame (/ (count (animation-state (:tex-and-durs (:animations ent)))) 2))
+                     0
+                     inc-frame)
+        next-texture-idx (if (zero? next-frame) 0 (* 2 next-frame))
+        next-texture (nth (animation-state (:tex-and-durs (:animations ent))) next-texture-idx)
+        next-duration-idx (if (zero? next-frame) 1 (- (* 2 next-frame) 1))
+        next-duration (nth (animation-state (:tex-and-durs (:animations ent))) next-duration-idx)]
+    (-> ent
+   (assoc-in [:animations :current-frame] next-frame)
+   (assoc-in [:animations :current-duration] next-duration)
+   (assoc :renderable next-texture))))
 
-;find texture for frame = frame number * 2 - 1
-;find duration for frame = frame number * 2
-;except for frame 0, since 0 * 2 is 0, which isn't right. 
-(defn animate-s [{entities :entities}]
-	(loop [ents (:entities game)
-         updated-ents []]
-		(if (empty? ents)
-		  updated-ents
-		  (let [e (first ents)]
-		    (if-let [animation (:animation e)]
-		      (if-let [renderable (:renderable e)]
-		        (cond
-		          (neg? (:current-frame animation))
-		            (recur (rest ents)
-		                   (conj updated-ents
-		                         (assoc-in e [:animation :current-frame] 0)))
-		          (<= 0 (:current-duration animation))
-		            (recur (rest ents)
-		                   (conj updated-ents
-		                         (let [new-frame-num (mod (inc (:current-frame animation)) (count (:animations animation)))]
-		                           (assoc-in (assoc-in e [:animation :current-frame] new-frame-num) 
-		                                     [:animation :current-duration] 
-		                                     (nth (:animations animation) (- (* new-frame-num 2) 1)))))))))))))
+(defn update-anim-ents [ents]
+  (mapv (fn [ent]
+			    (if (:is-playing (:animations ent))
+			      (let [animation-state (case (:state ent)
+			                            :idle :pistol-idle
+			                            :firing :pistol-fire)
+			            animations (animation-state (get-in ent [:animations :tex-and-durs]))]
+			        (if (neg? (:current-duration (:animations ent)))
+			          (update-animation-and-render-comps ent animation-state)
+			          (assoc-in ent [:animations :current-duration] (- (get-in ent [:animations :current-duration]) (:delta game)))))
+			      ent))
+			  ents))
+
+(defn animate-pistoleer-system [{entities :entities :as game}]
+  (let [ents (filterv (fn [ent] (and (:renderable ent) (:animations ent))) entities)
+        other-ents (filterv (fn [ent] (not (and (:renderable ent) (:animations ent)))) entities)]
+    (assoc game :entities (vec (concat other-ents (update-anim-ents ents))))))   
+
+(defn render-system [{entities :entities batch :batch :as game}]
+	(.begin batch)
+	(loop [ents entities]
+	  (if (empty? ents)
+	    nil
+	    (if-let [renderable (:renderable (first ents))]
+	     (let [transform (:transform (first ents))]
+	       (.draw batch renderable (float (:x transform)) (float (:y transform)) (float 64) (float 128))
+	       (recur (rest ents)))
+	     (recur (rest ents)))))
+	(.end batch)
+  game)    
 
 (defn init-tex-cache []
   (let [atlas (TextureAtlas. "s.pack")]
     (assoc {}
-         :pistol-fire [(.findRegion atlas "fire pistol00") 0.1
+         :pistol-fire [(.findRegion atlas "fire pistol00") 0.05
                        (.findRegion atlas "fire pistol01") 0.1
-                       (.findRegion atlas "fire pistol02") 0.1]
+                       (.findRegion atlas "pistol idle") 0.1]
          :pistol-idle [(.findRegion atlas "pistol idle") 0.1]
          :wall [(.findRegion atlas "wall") 0.1]
          :floor [(.findRegion atlas "floor") 0.1]
          :tracer [(.findRegion atlas "tracer") 0.1])))
 
 (defn init-game []
-  (let [tex-cache (init-tex-cache)]
-    (assoc {}
-           :batch (SpriteBatch.)
-           :tex-cache tex-cache
-           :inputs {}
-           :entities [(create-pistoleer tex-cache 50 50)])))
+  (let [tex-cache (init-tex-cache)
+        game-1 (assoc {}
+                      :batch (SpriteBatch.)
+                      :tex-cache tex-cache
+                      :inputs {})
+        game-2 (assoc game-1
+                      :entities [(pistoleer-entity game-1)])] 
+    game-2))
 
-(defn game-loop [game delta]
+(defn game-loop [game]
   (clear-screen)
-  (render-s game))
+  (-> game
+    (animate-pistoleer-system)
+    (render-system)))
 
 (defn screen []
   (reify Screen
@@ -125,7 +143,9 @@
     (render [this delta]
       (if (empty? game) ;if this file is reloaded in the repl, setScreen does not get called and bad things happen. So this avoids doing anything.
         ""
-        (alter-var-root (var game) #(game-loop % delta))))
+	      (do 
+         (update-game! #(assoc % :delta delta))
+         (update-game! #(game-loop %)))))
     
     (dispose[this])
     (hide [this])
