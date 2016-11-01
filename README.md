@@ -1,10 +1,6 @@
 # animation
 
-A Clojure library designed to ... well, that part is up to you.
-
-## Usage
-
-FIXME
+Learning Clojure while taking a stab at an animation system.
 
 ## License
 
